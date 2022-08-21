@@ -18,16 +18,16 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/http/cgi"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/google/goblet"
+	"github.com/canva/goblet"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -54,9 +54,9 @@ func init() {
 
 type TestServer struct {
 	UpstreamGitRepo   GitRepo
-	upstreamServer    *httptest.Server
+	upstreamServer    *http.Server
 	UpstreamServerURL string
-	proxyServer       *httptest.Server
+	proxyServer       *http.Server
 	ProxyServerURL    string
 }
 
@@ -75,8 +75,17 @@ func NewTestServer(config *TestServerConfig) *TestServer {
 		s.UpstreamGitRepo.Run("config", "uploadpack.allowfilter", "1")
 		s.UpstreamGitRepo.Run("config", "receive.advertisepushoptions", "1")
 
-		s.upstreamServer = httptest.NewServer(http.HandlerFunc(s.upstreamServerHandler))
-		s.UpstreamServerURL = s.upstreamServer.URL
+		s.upstreamServer = &http.Server{
+			Handler: http.HandlerFunc(s.upstreamServerHandler),
+		}
+		l, err := net.Listen("tcp4", ":0")
+		if err != nil {
+			log.Fatal(err)
+		}
+		go func() {
+			s.upstreamServer.Serve(l)
+		}()
+		s.UpstreamServerURL = fmt.Sprintf("http://%s/", l.Addr().String())
 	}
 
 	{
@@ -86,14 +95,24 @@ func NewTestServer(config *TestServerConfig) *TestServer {
 		}
 		config := &goblet.ServerConfig{
 			LocalDiskCacheRoot: dir,
-			URLCanonializer:    s.testURLCanonicalizer,
+			URLCanonicalizer:   s.testURLCanonicalizer,
 			RequestAuthorizer:  config.RequestAuthorizer,
 			TokenSource:        config.TokenSource,
 			ErrorReporter:      config.ErrorReporter,
 			RequestLogger:      config.RequestLogger,
 		}
-		s.proxyServer = httptest.NewServer(goblet.HTTPHandler(config))
-		s.ProxyServerURL = s.proxyServer.URL
+		s.proxyServer = &http.Server{
+			Handler: goblet.HTTPHandler(config),
+		}
+
+		l, err := net.Listen("tcp4", ":0")
+		if err != nil {
+			log.Fatal(err)
+		}
+		go func() {
+			s.proxyServer.Serve(l)
+		}()
+		s.ProxyServerURL = fmt.Sprintf("http://%s/", l.Addr().String())
 	}
 	return s
 }

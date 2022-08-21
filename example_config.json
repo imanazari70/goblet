@@ -1,0 +1,9 @@
+{
+  "port": 8080,
+  "cache_root": "/tmp/goblet",
+  "token_expiry_delta_seconds": 300,
+  "enable_metrics": true,
+  "repositories": [
+    "https://github.com/canva/goblet.git"
+  ]
+}

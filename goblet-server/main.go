@@ -1,3 +1,4 @@
+// Copyright 2021 Canva Inc
 // Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,45 +16,27 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
+	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"time"
 
-	"cloud.google.com/go/errorreporting"
-	"cloud.google.com/go/logging"
-	"cloud.google.com/go/storage"
-	"contrib.go.opencensus.io/exporter/stackdriver"
-	"github.com/google/goblet"
-	googlehook "github.com/google/goblet/google"
-	"github.com/google/uuid"
+	datadog "github.com/DataDog/opencensus-go-exporter-datadog"
+	"github.com/canva/goblet"
+	"github.com/canva/goblet/github"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
-	"golang.org/x/oauth2/google"
-
-	logpb "google.golang.org/genproto/googleapis/logging/v2"
-)
-
-const (
-	scopeCloudPlatform = "https://www.googleapis.com/auth/cloud-platform"
-	scopeUserInfoEmail = "https://www.googleapis.com/auth/userinfo.email"
 )
 
 var (
-	port      = flag.Int("port", 8080, "port to listen to")
-	cacheRoot = flag.String("cache_root", "", "Root directory of cached repositories")
-
-	stackdriverProject      = flag.String("stackdriver_project", "", "GCP project ID used for the Stackdriver integration")
-	stackdriverLoggingLogID = flag.String("stackdriver_logging_log_id", "", "Stackdriver logging Log ID")
-
-	backupBucketName   = flag.String("backup_bucket_name", "", "Name of the GCS bucket for backed-up repositories")
-	backupManifestName = flag.String("backup_manifest_name", "", "Name of the backup manifest")
+	config      = flag.String("config", "", "Path to Goblet's configuration file")
+	checkConfig = flag.Bool("check", false, "Only checking if the config is valid, then exit")
 
 	latencyDistributionAggregation = view.Distribution(
 		100,
@@ -77,6 +60,7 @@ var (
 		4000000,
 		8000000,
 	)
+
 	views = []*view.View{
 		{
 			Name:        "github.com/google/goblet/inbound-command-count",
@@ -115,150 +99,157 @@ var (
 	}
 )
 
+func FetchRepositories(config *goblet.ServerConfig, repositories []string, mustFetch bool) []error {
+	errorChans := make([]chan error, 0, len(repositories))
+
+	for _, repository := range repositories {
+		errorChan := make(chan error, 1)
+		errorChans = append(errorChans, errorChan)
+		u, err := url.Parse(repository)
+		if err != nil {
+			errorChan <- err
+		} else {
+			goblet.FetchManagedRepositoryAsync(config, u, mustFetch, errorChan)
+		}
+	}
+
+	errors := make([]error, 0)
+	for _, errorChan := range errorChans {
+		err := <-errorChan
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+	return errors
+}
+
 func main() {
 	flag.Parse()
 
-	ts, err := google.DefaultTokenSource(context.Background(), scopeCloudPlatform, scopeUserInfoEmail)
-	if err != nil {
-		log.Fatalf("Cannot initialize the OAuth2 token source: %v", err)
+	if *config == "" {
+		log.Fatal("The '-config' argument is mandatory")
 	}
-	authorizer, err := googlehook.NewRequestAuthorizer(ts)
+
+	configFile, err := goblet.LoadConfigFile(*config)
 	if err != nil {
-		log.Fatalf("Cannot create a request authorizer: %v", err)
+		log.Fatalf("Couldn't load the configuration file: %v\n", err)
 	}
+
+	if *checkConfig {
+		fmt.Println("Config is valid")
+		return
+	}
+
 	if err := view.Register(views...); err != nil {
 		log.Fatal(err)
 	}
 
-	var er func(*http.Request, error)
-	var rl func(r *http.Request, status int, requestSize, responseSize int64, latency time.Duration) = func(r *http.Request, status int, requestSize, responseSize int64, latency time.Duration) {
+	var er = func(r *http.Request, err error) {
+		log.Printf("Error while processing a request: %v", err)
+	}
+
+	var rl = func(r *http.Request, status int, requestSize, responseSize int64, latency time.Duration) {
 		dump, err := httputil.DumpRequest(r, false)
 		if err != nil {
 			return
 		}
 		log.Printf("%q %d reqsize: %d, respsize %d, latency: %v", dump, status, requestSize, responseSize, latency)
 	}
-	var lrol func(string, *url.URL) goblet.RunningOperation = func(action string, u *url.URL) goblet.RunningOperation {
+
+	var lrol = func(action string, u *url.URL) goblet.RunningOperation {
 		log.Printf("Starting %s for %s", action, u.String())
 		return &logBasedOperation{action, u}
 	}
-	var backupLogger *log.Logger = log.New(os.Stderr, "", log.LstdFlags)
-	if *stackdriverProject != "" {
-		// Error reporter
-		ec, err := errorreporting.NewClient(context.Background(), *stackdriverProject, errorreporting.Config{
-			ServiceName: "goblet",
-		})
-		if err != nil {
-			log.Fatalf("Cannot create a Stackdriver errorreporting client: %v", err)
-		}
-		defer func() {
-			if err := ec.Close(); err != nil {
-				log.Printf("Failed to report errors to Stackdriver: %v", err)
-			}
-		}()
-		er = func(r *http.Request, err error) {
-			ec.Report(errorreporting.Entry{
-				Req:   r,
-				Error: err,
-			})
-			log.Printf("Error while processing a request: %v", err)
-		}
 
-		if *stackdriverLoggingLogID != "" {
-			lc, err := logging.NewClient(context.Background(), *stackdriverProject)
-			if err != nil {
-				log.Fatalf("Cannot create a Stackdriver logging client: %v", err)
-			}
-			defer func() {
-				if err := lc.Close(); err != nil {
-					log.Printf("Failed to log requests to Stackdriver: %v", err)
-				}
-			}()
+	ts, err := github.NewTokenSource(
+		os.Getenv("GH_APP_ID"),
+		os.Getenv("GH_APP_INSTALLATION_ID"),
+		os.Getenv("GH_APP_PRIVATE_KEY"),
+		time.Duration(configFile.TokenExpiryDeltaSeconds)*time.Second,
+	)
 
-			// Request logger
-			sdLogger := lc.Logger(*stackdriverLoggingLogID)
-			rl = func(r *http.Request, status int, requestSize, responseSize int64, latency time.Duration) {
-				sdLogger.Log(logging.Entry{
-					HTTPRequest: &logging.HTTPRequest{
-						Request:      r,
-						RequestSize:  requestSize,
-						Status:       status,
-						ResponseSize: responseSize,
-						Latency:      latency,
-						RemoteIP:     r.RemoteAddr,
-					},
-				})
-			}
-			lrol = func(action string, u *url.URL) goblet.RunningOperation {
-				op := &stackdriverBasedOperation{
-					sdLogger:  sdLogger,
-					action:    action,
-					u:         u,
-					startTime: time.Now(),
-					id:        uuid.New().String(),
-				}
-				op.sdLogger.Log(logging.Entry{
-					Payload: &LongRunningOperation{
-						Action: op.action,
-						URL:    op.u.String(),
-					},
-					Operation: &logpb.LogEntryOperation{
-						Id:       op.id,
-						Producer: "github.com/google/goblet",
-						First:    true,
-					},
-				})
-				return op
-			}
-			// Backup logger
-			backupLogger = sdLogger.StandardLogger(logging.Warning)
-		}
-
-		// OpenCensus view exporters.
-		exporter, err := stackdriver.NewExporter(stackdriver.Options{
-			ProjectID: *stackdriverProject,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err = exporter.StartMetricsExporter(); err != nil {
-			log.Fatal(err)
-		}
+	if err != nil {
+		log.Fatal(err)
 	}
 
+	authorizer := github.NewAuthorizer(true, goblet.StatsdClient)
+	defer authorizer.Close()
+
 	config := &goblet.ServerConfig{
-		LocalDiskCacheRoot:         *cacheRoot,
-		URLCanonializer:            googlehook.CanonicalizeURL,
-		RequestAuthorizer:          authorizer,
+		LocalDiskCacheRoot:         configFile.CacheRoot,
+		URLCanonicalizer:           github.URLCanonicalizer,
+		RequestAuthorizer:          authorizer.RequestAuthorizer,
 		TokenSource:                ts,
 		ErrorReporter:              er,
 		RequestLogger:              rl,
 		LongRunningOperationLogger: lrol,
+		PackObjectsHook:            configFile.PackObjectsHook,
+		PackObjectsCache:           configFile.PackObjectsCache,
 	}
 
-	if *backupBucketName != "" && *backupManifestName != "" {
-		gsClient, err := storage.NewClient(context.Background())
+	if configFile.EnableMetrics {
+		log.Println("Initializing Datadog exporter...")
+		dd, err := datadog.NewExporter(datadog.Options{})
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("Failed to create the Datadog exporter: %v", err)
+		}
+		// It is imperative to invoke flush before your main function exits
+		defer dd.Stop()
+
+		view.RegisterExporter(dd)
+	}
+
+	if configFile.PackObjectsHook != "" {
+		if configFile.PackObjectsCache == "" {
+			log.Fatalf("pack_objects_cache must be set in config, if pack_objects_hook is set.")
+		}
+	}
+
+	log.Println("Initializing repositories...")
+	for _, repository := range configFile.Repositories {
+		u, err := url.Parse(repository)
+		if err != nil {
+			log.Fatalf("Failed to initialize repository '%s': %v", repository, err)
 		}
 
-		googlehook.RunBackupProcess(config, gsClient.Bucket(*backupBucketName), *backupManifestName, backupLogger)
+		_, err = goblet.OpenManagedRepository(config, u)
+		if err != nil {
+			log.Fatalf("Failed to initialize repository '%s': %v", repository, err)
+		}
 	}
+
+	// Pre-fetch repositories before serving any traffic. This prevents initial
+	// requests from being blocked a long time until the repositories cache is
+	// ready.
+	log.Println("Pre-fetching repositories...")
+	if errs := FetchRepositories(config, configFile.Repositories, true); len(errs) > 0 {
+		for _, err := range errs {
+			log.Println(err)
+		}
+		os.Exit(1)
+	}
+
+	// Schedule periodic upstream fetches every 15 minutes.
+	log.Println("Starting background fetches...")
+	cancel := goblet.RunEvery(5*time.Minute, func(t time.Time) {
+		for _, err := range FetchRepositories(config, configFile.Repositories, false) {
+			log.Println(err)
+		}
+	})
+	defer cancel()
+
+	log.Println("Registering HTTP routes...")
+	http.Handle("/", goblet.HTTPHandler(config))
 
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok\n")
 	})
-	http.Handle("/", goblet.HTTPHandler(config))
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
-}
 
-type LongRunningOperation struct {
-	Action          string `json:"action"`
-	URL             string `json:"url"`
-	DurationMs      int    `json:"duration_msec,omitempty"`
-	Error           string `json:"error,omitempty"`
-	ProgressMessage string `json:"progress_message,omitempty"`
+	http.HandleFunc("/authcache", authorizer.CacheMetricsHandler)
+
+	log.Printf("Starting HTTP server on port %d...\n", configFile.Port)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", configFile.Port), nil))
 }
 
 type logBasedOperation struct {
@@ -272,46 +263,4 @@ func (op *logBasedOperation) Printf(format string, a ...interface{}) {
 
 func (op *logBasedOperation) Done(err error) {
 	log.Printf("Finished %s for %s: %v", op.action, op.u.String(), err)
-}
-
-type stackdriverBasedOperation struct {
-	sdLogger  *logging.Logger
-	action    string
-	u         *url.URL
-	startTime time.Time
-	id        string
-}
-
-func (op *stackdriverBasedOperation) Printf(format string, a ...interface{}) {
-	lro := &LongRunningOperation{
-		Action:          op.action,
-		URL:             op.u.String(),
-		ProgressMessage: fmt.Sprintf(format, a...),
-	}
-	op.sdLogger.Log(logging.Entry{
-		Payload: lro,
-		Operation: &logpb.LogEntryOperation{
-			Id:       op.id,
-			Producer: "github.com/google/goblet",
-		},
-	})
-}
-
-func (op *stackdriverBasedOperation) Done(err error) {
-	lro := &LongRunningOperation{
-		Action:     op.action,
-		URL:        op.u.String(),
-		DurationMs: int(time.Since(op.startTime) / time.Millisecond),
-	}
-	if err != nil {
-		lro.Error = err.Error()
-	}
-	op.sdLogger.Log(logging.Entry{
-		Payload: lro,
-		Operation: &logpb.LogEntryOperation{
-			Id:       op.id,
-			Producer: "github.com/google/goblet",
-			Last:     true,
-		},
-	})
 }

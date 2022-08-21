@@ -17,7 +17,7 @@ package end2end
 import (
 	"testing"
 
-	goblettest "github.com/google/goblet/testing"
+	goblettest "github.com/canva/goblet/testing"
 )
 
 func TestFetch(t *testing.T) {

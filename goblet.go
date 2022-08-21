@@ -1,3 +1,4 @@
+// Copyright 2021 Canva Inc
 // Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,8 +17,12 @@ package goblet
 
 import (
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
+	"strings"
 	"time"
 
 	"go.opencensus.io/stats"
@@ -60,7 +65,7 @@ var (
 type ServerConfig struct {
 	LocalDiskCacheRoot string
 
-	URLCanonializer func(*url.URL) (*url.URL, error)
+	URLCanonicalizer func(*url.URL) (*url.URL, error)
 
 	RequestAuthorizer func(*http.Request) error
 
@@ -71,6 +76,10 @@ type ServerConfig struct {
 	RequestLogger func(r *http.Request, status int, requestSize, responseSize int64, latency time.Duration)
 
 	LongRunningOperationLogger func(string, *url.URL) RunningOperation
+
+	PackObjectsHook string
+
+	PackObjectsCache string
 }
 
 type RunningOperation interface {
@@ -93,14 +102,100 @@ func HTTPHandler(config *ServerConfig) http.Handler {
 	return &httpProxyServer{config}
 }
 
+// RunEvery schedules a given function to be executed on a duty cycle. A cancellation function is
+// returned to prevent any future executions. In-flight execution cancellations are delegated to
+// callers.
+func RunEvery(delay time.Duration, f func(t time.Time)) func() {
+	stop := make(chan bool)
+	go func() {
+		for {
+			select {
+			case t := <-time.After(delay):
+				f(t)
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	return func() { stop <- true }
+}
+
 func OpenManagedRepository(config *ServerConfig, u *url.URL) (ManagedRepository, error) {
 	return openManagedRepository(config, u)
 }
 
-func ListManagedRepositories(fn func(ManagedRepository)) {
-	managedRepos.Range(func(key, value interface{}) bool {
-		m := value.(*managedRepository)
-		fn(m)
-		return true
+func FetchManagedRepositoryAsync(config *ServerConfig, u *url.URL, mustFetch bool, errorChan chan<- error) {
+	repo, err := openManagedRepository(config, u)
+	if err != nil {
+		errorChan <- err
+		return
+	}
+
+	if !mustFetch {
+		pendingFetches := repo.fetchUpstreamPool.WaitingTasks()
+		if pendingFetches > 0 {
+			log.Printf("FetchManagedRepository skipped since there are %d pending fetches (%s)\n", pendingFetches, repo.localDiskPath)
+			errorChan <- nil
+			return
+		}
+		elapsedSinceLastUpdate := time.Since(repo.LastUpdateTime())
+		if elapsedSinceLastUpdate < 15*time.Minute {
+			log.Printf("FetchManagedRepository skipped since repo was updated %s ago (%s)\n", elapsedSinceLastUpdate, repo.localDiskPath)
+			errorChan <- nil
+			return
+		}
+	}
+
+	fetchStartTime := time.Now()
+	repo.fetchUpstreamPool.Submit(func() {
+		logElapsed("FetchManagedRepository queuing", fetchStartTime, time.Minute, repo.localDiskPath)
+
+		if mustFetch {
+			log.Printf("FetchManagedRepository required since mustFetch is set (%s)\n", repo.localDiskPath)
+			StatsdClient.Incr("goblet.operation.count", []string{"dir:" + repo.localDiskPath, "op:background_fetch", "must:1"}, 1)
+			errorChan <- repo.fetchUpstream(nil)
+		} else {
+			// check again when the task is picked up
+			elapsedSinceLastUpdate := time.Since(repo.LastUpdateTime())
+			if elapsedSinceLastUpdate < 15*time.Minute {
+				log.Printf("FetchManagedRepository skipped since repo was updated %s ago (%s)\n", elapsedSinceLastUpdate, repo.localDiskPath)
+				errorChan <- nil
+			} else {
+				log.Printf("FetchManagedRepository required since repo was not updated for %s (%s)\n", elapsedSinceLastUpdate, repo.localDiskPath)
+				StatsdClient.Incr("goblet.operation.count", []string{"dir:" + repo.localDiskPath, "op:background_fetch", "must:0"}, 1)
+				errorChan <- repo.fetchUpstream(nil)
+			}
+		}
+
+		// log gc.log content if any
+		if content, err := os.ReadFile(path.Join(repo.localDiskPath, "gc.log")); err == nil {
+			log.Printf("Found git gc log file (content:%s, dir:%s)\n", strings.ReplaceAll(string(content), "\n", " "), repo.localDiskPath)
+		}
 	})
+}
+
+// DefaultURLCanonicalizer is a URLCanonicalizer implementation that agnostic to any Git hosting provider.
+func DefaultURLCanonicalizer(u *url.URL) (*url.URL, error) {
+	ret := url.URL{}
+	ret.Scheme = "https"
+	ret.Host = strings.ToLower(u.Host)
+	ret.Path = u.Path
+
+	// Git endpoint suffixes.
+	if strings.HasSuffix(ret.Path, "/info/refs") {
+		ret.Path = strings.TrimSuffix(ret.Path, "/info/refs")
+	} else if strings.HasSuffix(ret.Path, "/git-upload-pack") {
+		ret.Path = strings.TrimSuffix(ret.Path, "/git-upload-pack")
+	} else if strings.HasSuffix(ret.Path, "/git-receive-pack") {
+		ret.Path = strings.TrimSuffix(ret.Path, "/git-receive-pack")
+	}
+	ret.Path = strings.TrimSuffix(ret.Path, ".git")
+	return &ret, nil
+}
+
+// NoOpRequestAuthorizer is a request authorizer that always succeeds and checks nothing
+// about the incoming request.
+func NoOpRequestAuthorizer(request *http.Request) error {
+	return nil
 }

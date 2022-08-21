@@ -17,8 +17,10 @@ package goblet
 import (
 	"compress/gzip"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/gitprotocolio"
 	"go.opencensus.io/tag"
@@ -31,6 +33,16 @@ type httpProxyServer struct {
 }
 
 func (s *httpProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// In AWS, ALBs strips the "scheme", "host" bits from the request URI.
+	// Goblet requires this data (especially the "host" bit) to construct
+	// the upstream URL. Thus, we re-construct the original URI using the
+	// request Host header and assuming that all upstream locations will
+	// accept HTTPs.
+	if r.URL.Host == "" {
+		r.URL.Host = r.Host
+		r.URL.Scheme = "https"
+	}
+
 	w, logCloser := logHTTPRequest(s.config, w, r)
 	defer logCloser()
 	reporter := &httpErrorReporter{config: s.config, req: r, w: w}
@@ -41,6 +53,12 @@ func (s *httpProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(ctx)
+
+	// Extract CI-Source
+	ci_source := r.Header.Get("CI-Source")
+	if len(ci_source) == 0 {
+		ci_source = r.UserAgent()
+	}
 
 	// Technically, this server is an HTTP proxy, and it should use
 	// Proxy-Authorization / Proxy-Authenticate. However, existing
@@ -61,7 +79,7 @@ func (s *httpProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/git-receive-pack"):
 		reporter.reportError(status.Error(codes.Unimplemented, "git-receive-pack not supported"))
 	case strings.HasSuffix(r.URL.Path, "/git-upload-pack"):
-		s.uploadPackHandler(reporter, w, r)
+		s.uploadPackHandler(reporter, w, r, ci_source)
 	}
 }
 
@@ -89,7 +107,7 @@ func (s *httpProxyServer) infoRefsHandler(reporter *httpErrorReporter, w http.Re
 	}
 }
 
-func (s *httpProxyServer) uploadPackHandler(reporter *httpErrorReporter, w http.ResponseWriter, r *http.Request) {
+func (s *httpProxyServer) uploadPackHandler(reporter *httpErrorReporter, w http.ResponseWriter, r *http.Request, ci_source string) {
 	// /git-upload-pack doesn't recognize text/plain error. Send an error
 	// with ErrorPacket.
 	w.Header().Add("Content-Type", "application/x-git-upload-pack-result")
@@ -125,9 +143,19 @@ func (s *httpProxyServer) uploadPackHandler(reporter *httpErrorReporter, w http.
 	}
 
 	gitReporter := &gitProtocolHTTPErrorReporter{config: s.config, req: r, w: w}
-	for _, command := range commands {
-		if !handleV2Command(r.Context(), gitReporter, repo, command, w) {
+	for i, command := range commands {
+		tags := generateV2RequestMetricTags(command, repo)
+		startTime := time.Now()
+		if !handleV2Command(r.Context(), gitReporter, repo, command, w, ci_source) {
+			log.Printf("Failed to handle V2 Request (command %d/%d) (CI: %s, repo:%s)\n", i+1, len(commands), ci_source, repo.upstreamURL)
+			duration := time.Since(startTime)
+			tags = append(tags, "success:0")
+			StatsdClient.Distribution("goblet.v2request.dist", duration.Seconds(), tags, 1)
 			return
+		} else {
+			duration := time.Since(startTime)
+			tags = append(tags, "success:1")
+			StatsdClient.Distribution("goblet.v2request.dist", duration.Seconds(), tags, 1)
 		}
 	}
 }

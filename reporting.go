@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
 	"google.golang.org/grpc/codes"
@@ -61,7 +60,7 @@ func (h *httpErrorReporter) reportError(err error) {
 		h.w.Header().Add("WWW-Authenticate", "Bearer")
 		h.w.Header().Add("WWW-Authenticate", "Basic realm=goblet")
 	}
-	httpStatus := runtime.HTTPStatusFromCode(code)
+	httpStatus := HTTPStatusFromGrpcCode(code)
 	if message == "" {
 		message = http.StatusText(httpStatus)
 	}
