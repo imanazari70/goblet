@@ -178,7 +178,7 @@ func main() {
 	config := &goblet.ServerConfig{
 		LocalDiskCacheRoot:         configFile.CacheRoot,
 		URLCanonicalizer:           github.URLCanonicalizer,
-		RequestAuthorizer:          authorizer.RequestAuthorizer,
+		RequestAuthorizer:          goblet.NoOpRequestAuthorizer,
 		TokenSource:                ts,
 		ErrorReporter:              er,
 		RequestLogger:              rl,
