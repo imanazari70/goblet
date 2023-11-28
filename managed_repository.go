@@ -223,6 +223,18 @@ func (r *managedRepository) lsRefsUpstream(command []*gitprotocolio.ProtocolV2Re
 	return chunks, nil
 }
 
+// Run git gc
+func (r *managedRepository) runGC() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	op := r.startOperation("gitGC")
+	err := runGit(op, r.localDiskPath, "gc", "--prune='15.minutes.ago'")
+	op.Done(err)
+
+	return err
+}
+
 func (r *managedRepository) fetchUpstream(additionalWants []git.Oid) (err error) {
 	var t *oauth2.Token
 	lockTime := time.Now()
@@ -277,7 +289,7 @@ func (r *managedRepository) fetchUpstreamInternal(remote string, token *oauth2.T
 	args = append(args, "fetch")
 
 	// fetch options
-	args = append(args, "--quiet")
+	args = append(args, "-v")
 	args = append(args, "--force")
 	args = append(args, "--no-write-fetch-head")
 	args = append(args, "--prune")
@@ -494,6 +506,7 @@ func lookupReference(repo *git.Repository, refName string, resolve bool) (*git.R
 }
 
 func runGit(op RunningOperation, gitDir string, arg ...string) error {
+	log.Printf("(runGit) Running git %s on %s\n", strings.Join(arg, " "), gitDir)
 	cmd := exec.Command(gitBinary, arg...)
 	cmd.Env = []string{}
 	cmd.Dir = gitDir
@@ -506,6 +519,7 @@ func runGit(op RunningOperation, gitDir string, arg ...string) error {
 }
 
 func runGitWithStdOut(op RunningOperation, w io.Writer, gitDir string, arg ...string) error {
+	log.Printf("(runGitWithStdOut) Running git %s on %s\n", strings.Join(arg, " "), gitDir)
 	cmd := exec.Command(gitBinary, arg...)
 	cmd.Env = []string{}
 	cmd.Dir = gitDir
