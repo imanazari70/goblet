@@ -171,6 +171,8 @@ func FetchManagedRepositoryAsync(config *ServerConfig, u *url.URL, mustFetch boo
 		// log gc.log content if any
 		if content, err := os.ReadFile(path.Join(repo.localDiskPath, "gc.log")); err == nil {
 			log.Printf("Found git gc log file (content:%s, dir:%s)\n", strings.ReplaceAll(string(content), "\n", " "), repo.localDiskPath)
+			log.Print("Running git gc")
+			repo.runGC()
 		}
 	})
 }
