@@ -20,31 +20,22 @@ We took the initial implementation from
 `140dd10abcdde487161f1e3c2c6e9b4868f7326c` and added the following modifications:
 - Removed all code specific to `googlesource.com`.
 - Removed all the GCP-related code and dependencies.
-- Added support for caching GitHub repositories, and automatically fetch every 15 minutes.
-- Added support for GitHub Apps as authentication mechanism.
-- Added DataDog for exporting metrics.
 - Remove Bazel. Use pure Go tooling to build and release.
 
 ## Usage
-1. Build Goblet
+1. Build Image
     ```bash
-    bazel build //goblet-server
+    docker build  -t image_name .
     ```
-2. Start the Goblet server
+2. Create and run server container
     ```bash
-    export GH_APP_ID="<APP_ID>"
-    export GH_APP_INSTALLATION_ID="<APP_INSTALLATION_ID>"
-    export GH_APP_PRIVATE_KEY="<APP_PRIVATE_KEY_PEM_TEXT>"
-    bazel-bin/goblet-server/goblet-server_/goblet-server -config "<PATH_TO_CONFIG_FILE>"
+    docker run  -p 8080:8080 image_name
     ```
-
-    See `example_config.json` for how the minimum config file should look like.
-
 3. Configure your `Git` client to use `Goblet` as a read-only proxy:
     ```bash
-    git config http.proxy "http://localhost:8080"
-    git remote set-url origin "http://github.com/<owner>/<repo-name>.git"
-    git remote set-url --push origin "git@github.com:<owner>/<repo-name>.git"
+    git config --global url."http://".insteadOf "https://"
+    git config --global http.proxy http://server_ip:8080/
+    git clone https://chromium.googlesource.com/v8/v8
     ```
 4. Try a `git fetch` command and watch `Goblet`'s outputs to see if it's working 
    as expected.
