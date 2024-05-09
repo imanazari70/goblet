@@ -69,8 +69,9 @@ func (s *httpProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if proto := r.Header.Get("Git-Protocol"); proto != "version=2" {
-		reporter.reportError(status.Errorf(codes.InvalidArgument, "accepts only Git protocol v2, received %v", proto))
-		return
+		log.Printf("proto is: %s", proto)
+		// reporter.reportError(status.Errorf(codes.InvalidArgument, "accepts only Git protocol v2, received %v", proto))
+		// return
 	}
 
 	switch {
@@ -146,7 +147,8 @@ func (s *httpProxyServer) uploadPackHandler(reporter *httpErrorReporter, w http.
 	for i, command := range commands {
 		tags := generateV2RequestMetricTags(command, repo)
 		startTime := time.Now()
-		if !handleV2Command(r.Context(), gitReporter, repo, command, w, ci_source) {
+		result := handleV2Command(r.Context(), gitReporter, repo, command, w, ci_source)
+		if !result {
 			log.Printf("Failed to handle V2 Request (command %d/%d) (CI: %s, repo:%s)\n", i+1, len(commands), ci_source, repo.upstreamURL)
 			duration := time.Since(startTime)
 			tags = append(tags, "success:0")

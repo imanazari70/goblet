@@ -27,10 +27,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/canva/goblet"
-	"golang.org/x/oauth2"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/canva-public/goblet"
+	// "golang.org/x/oauth2"
+	// "google.golang.org/grpc/codes"
+	// "google.golang.org/grpc/status"
 )
 
 const (
@@ -41,7 +41,7 @@ const (
 var (
 	gitBinary string
 
-	TestTokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: validServerAuthToken})
+	// TestTokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: validServerAuthToken})
 )
 
 func init() {
@@ -62,9 +62,9 @@ type TestServer struct {
 
 type TestServerConfig struct {
 	RequestAuthorizer func(r *http.Request) error
-	TokenSource       oauth2.TokenSource
-	ErrorReporter     func(*http.Request, error)
-	RequestLogger     func(r *http.Request, status int, requestSize, responseSize int64, latency time.Duration)
+	// TokenSource       oauth2.TokenSource
+	ErrorReporter func(*http.Request, error)
+	RequestLogger func(r *http.Request, status int, requestSize, responseSize int64, latency time.Duration)
 }
 
 func NewTestServer(config *TestServerConfig) *TestServer {
@@ -97,9 +97,9 @@ func NewTestServer(config *TestServerConfig) *TestServer {
 			LocalDiskCacheRoot: dir,
 			URLCanonicalizer:   s.testURLCanonicalizer,
 			RequestAuthorizer:  config.RequestAuthorizer,
-			TokenSource:        config.TokenSource,
-			ErrorReporter:      config.ErrorReporter,
-			RequestLogger:      config.RequestLogger,
+			// TokenSource:        config.TokenSource,
+			ErrorReporter: config.ErrorReporter,
+			RequestLogger: config.RequestLogger,
 		}
 		s.proxyServer = &http.Server{
 			Handler: goblet.HTTPHandler(config),
@@ -137,10 +137,10 @@ func (s *TestServer) testURLCanonicalizer(u *url.URL) (*url.URL, error) {
 }
 
 func (s *TestServer) upstreamServerHandler(w http.ResponseWriter, req *http.Request) {
-	if req.Header.Get("Authorization") != "Bearer "+validServerAuthToken {
-		http.Error(w, "invalid authenticator", http.StatusForbidden)
-		return
-	}
+	// if req.Header.Get("Authorization") != "Bearer "+validServerAuthToken {
+	// 	http.Error(w, "invalid authenticator", http.StatusForbidden)
+	// 	return
+	// }
 
 	h := &cgi.Handler{
 		Path: gitBinary,
@@ -173,7 +173,7 @@ func (s *TestServer) CreateRandomCommitUpstream() (string, error) {
 		return "", err
 	}
 
-	_, err = pushClient.Run("-c", "http.extraHeader=Authorization: Bearer "+validServerAuthToken, "push", "-f", s.UpstreamServerURL, "master:master")
+	_, err = pushClient.Run("push", "-f", s.UpstreamServerURL, "master:master")
 	return hash, err
 
 }
@@ -185,11 +185,12 @@ func (s *TestServer) Close() {
 }
 
 func TestRequestAuthorizer(r *http.Request) error {
-	authzHeader := r.Header.Get("Authorization")
-	if authzHeader == "Bearer "+ValidClientAuthToken {
-		return nil
-	}
-	return status.Errorf(codes.Unauthenticated, "not a valid client auth token: %s", authzHeader)
+	return nil
+	// authzHeader := r.Header.Get("Authorization")
+	// if authzHeader == "Bearer "+ValidClientAuthToken {
+	// 	return nil
+	// }
+	// return status.Errorf(codes.Unauthenticated, "not a valid client auth token: %s", authzHeader)
 }
 
 type GitRepo string

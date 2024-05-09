@@ -38,7 +38,8 @@ import (
 	git "github.com/libgit2/git2go/v33"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
-	"golang.org/x/oauth2"
+
+	// "golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -182,14 +183,14 @@ func (r *managedRepository) lsRefsUpstream(command []*gitprotocolio.ProtocolV2Re
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "cannot construct a request object: %v", err)
 	}
-	t, err := r.config.TokenSource.Token()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "cannot obtain an OAuth2 access token for the server: %v", err)
-	}
+	// t, err := r.config.TokenSource.Token()
+	// if err != nil {
+	// 	return nil, status.Errorf(codes.Internal, "cannot obtain an OAuth2 access token for the server: %v", err)
+	// }
 	req.Header.Add("Content-Type", "application/x-git-upload-pack-request")
 	req.Header.Add("Accept", "application/x-git-upload-pack-result")
 	req.Header.Add("Git-Protocol", "version=2")
-	t.SetAuthHeader(req)
+	// t.SetAuthHeader(req)
 
 	startTime := time.Now()
 	resp, err := http.DefaultClient.Do(req)
@@ -236,7 +237,7 @@ func (r *managedRepository) runGC() error {
 }
 
 func (r *managedRepository) fetchUpstream(additionalWants []git.Oid) (err error) {
-	var t *oauth2.Token
+	// var t *oauth2.Token
 	lockTime := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -254,12 +255,13 @@ func (r *managedRepository) fetchUpstream(additionalWants []git.Oid) (err error)
 		}
 	}
 
-	t, err = r.config.TokenSource.Token()
-	if err != nil {
-		err = status.Errorf(codes.Internal, "cannot obtain an OAuth2 access token for the server: %v", err)
-		return err
-	}
-	err = r.fetchUpstreamInternal("origin", t, additionalWants)
+	// t, err = r.config.TokenSource.Token()
+	// if err != nil {
+	// 	err = status.Errorf(codes.Internal, "cannot obtain an OAuth2 access token for the server: %v", err)
+	// 	return err
+	// }
+	err = r.fetchUpstreamInternal("all", additionalWants)
+	err = r.fetchUpstreamInternal("origin", additionalWants)
 	endTime := time.Now()
 	duration := endTime.Sub(startTime)
 	StatsdClient.Distribution("goblet.fetchupstream.dist", duration.Seconds(), []string{"dir:" + r.localDiskPath}, 1)
@@ -270,50 +272,57 @@ func (r *managedRepository) fetchUpstream(additionalWants []git.Oid) (err error)
 	if err == nil {
 		atomic.StoreInt64(&r.lastUpdateUnix, startTime.Unix())
 	} else {
-		log.Printf("FetchUpstream failed. (token_exp:%s, dir:%s, err:%v)\n", t.Expiry, r.localDiskPath, err)
+		log.Printf("FetchUpstream failed. (dir:%s, err:%v)\n", r.localDiskPath, err)
 	}
 
 	return err
 }
 
 // This function should not be called directly, call fetchUpstream() instead
-func (r *managedRepository) fetchUpstreamInternal(remote string, token *oauth2.Token, additionalWants []git.Oid) error {
+func (r *managedRepository) fetchUpstreamInternal(remote string, additionalWants []git.Oid) error {
 	args := make([]string, 0)
 
 	// git options
-	args = append(args, "-c")
-	args = append(args, fmt.Sprintf("http.extraHeader=Authorization: %s %s", token.Type(), token.AccessToken))
-	tokenArgIndex := len(args) - 1
+	// args = append(args, "-c")
+	// args = append(args, fmt.Sprintf("http.extraHeader=Authorization: %s %s", token.Type(), token.AccessToken))
+	// tokenArgIndex := len(args) - 1
 
 	// git command
 	args = append(args, "fetch")
+	if remote == "all" {
+		args = append(args, "--all")
+	} else {
+			// fetch options
+		// 
+		args = append(args, "--force")
+		// args = append(args, "--no-write-fetch-head")
+		args = append(args, "--prune")
+		args = append(args, "--no-tags")
 
-	// fetch options
-	args = append(args, "--force")
-	args = append(args, "--no-write-fetch-head")
-	args = append(args, "--prune")
-	args = append(args, "--no-tags")
+		// remote
+		args = append(args, remote)
 
-	// remote
-	args = append(args, remote)
-
-	// refspecs
-	args = append(args, "+refs/heads/*:refs/remotes/origin/*")
-	args = append(args, "^refs/pull/*")
-	if len(additionalWants) >= 1 {
-		// only the first want will be appended
-		args = append(args, additionalWants[0].String())
-		if len(additionalWants) > 1 {
-			log.Printf("Additional wants %s... ignored in git fetch refspec\n", additionalWants[1].String())
+		// refspecs
+		args = append(args, "+refs/heads/*:refs/remotes/origin/*")
+		// args = append(args, "^refs/pull/*")
+		if len(additionalWants) >= 1 {
+			// only the first want will be appended
+			args = append(args, additionalWants[0].String())
+			if len(additionalWants) > 1 {
+				log.Printf("Additional wants %s... ignored in git fetch refspec\n", additionalWants[1].String())
+			}
 		}
+
 	}
 
+
+	log.Printf("Wants: %s", additionalWants)
 	op := r.startOperation("FetchUpstream")
 	err := runGit(op, r.localDiskPath, args...)
 	op.Done(err)
 
 	// mask token before logging
-	args[tokenArgIndex] = "[redacted]"
+	// args[tokenArgIndex] = "[redacted]"
 	log.Printf("FetchUpstream executed git %s on %s\n", strings.Join(args, " "), r.localDiskPath)
 
 	return err

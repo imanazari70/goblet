@@ -28,8 +28,8 @@ import (
 	"time"
 
 	datadog "github.com/DataDog/opencensus-go-exporter-datadog"
-	"github.com/canva/goblet"
-	"github.com/canva/goblet/github"
+	"github.com/canva-public/goblet"
+	"github.com/canva-public/goblet/github"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
 )
@@ -161,12 +161,12 @@ func main() {
 		return &logBasedOperation{action, u}
 	}
 
-	ts, err := github.NewTokenSource(
-		os.Getenv("GH_APP_ID"),
-		os.Getenv("GH_APP_INSTALLATION_ID"),
-		os.Getenv("GH_APP_PRIVATE_KEY"),
-		time.Duration(configFile.TokenExpiryDeltaSeconds)*time.Second,
-	)
+	// ts, err := github.NewTokenSource(
+	// 	os.Getenv("GH_APP_ID"),
+	// 	os.Getenv("GH_APP_INSTALLATION_ID"),
+	// 	os.Getenv("GH_APP_PRIVATE_KEY"),
+	// 	time.Duration(configFile.TokenExpiryDeltaSeconds)*time.Second,
+	// )
 
 	if err != nil {
 		log.Fatal(err)
@@ -176,10 +176,10 @@ func main() {
 	defer authorizer.Close()
 
 	config := &goblet.ServerConfig{
-		LocalDiskCacheRoot:         configFile.CacheRoot,
-		URLCanonicalizer:           github.URLCanonicalizer,
-		RequestAuthorizer:          goblet.NoOpRequestAuthorizer,
-		TokenSource:                ts,
+		LocalDiskCacheRoot: configFile.CacheRoot,
+		URLCanonicalizer:   github.URLCanonicalizer,
+		RequestAuthorizer:  goblet.NoOpRequestAuthorizer,
+		// TokenSource:                ts,
 		ErrorReporter:              er,
 		RequestLogger:              rl,
 		LongRunningOperationLogger: lrol,

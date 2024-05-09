@@ -17,13 +17,13 @@ package end2end
 import (
 	"testing"
 
-	goblettest "github.com/canva/goblet/testing"
+	goblettest "github.com/canva-public/goblet/testing"
 )
 
 func TestFetch(t *testing.T) {
 	ts := goblettest.NewTestServer(&goblettest.TestServerConfig{
 		RequestAuthorizer: goblettest.TestRequestAuthorizer,
-		TokenSource:       goblettest.TestTokenSource,
+		// TokenSource:       goblettest.TestTokenSource,
 	})
 	defer ts.Close()
 
@@ -48,7 +48,7 @@ func TestFetch(t *testing.T) {
 func TestFetch_ForceFetchUpdate(t *testing.T) {
 	ts := goblettest.NewTestServer(&goblettest.TestServerConfig{
 		RequestAuthorizer: goblettest.TestRequestAuthorizer,
-		TokenSource:       goblettest.TestTokenSource,
+		// TokenSource:       goblettest.TestTokenSource,
 	})
 	defer ts.Close()
 

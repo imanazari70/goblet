@@ -33,7 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
-	"golang.org/x/oauth2"
+	// "golang.org/x/oauth2"
 )
 
 var (
@@ -75,7 +75,7 @@ type ServerConfig struct {
 
 	RequestAuthorizer func(*http.Request) error
 
-	TokenSource oauth2.TokenSource
+	// TokenSource oauth2.TokenSource
 
 	ErrorReporter func(*http.Request, error)
 

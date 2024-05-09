@@ -1,9 +1,11 @@
 package goblet
 
 import (
+	// "log"
+	"net/http"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/grpclog"
-	"net/http"
 )
 
 // HTTPStatusFromGrpcCode converts a gRPC error code into the corresponding HTTP response status.
